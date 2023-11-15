@@ -4,116 +4,65 @@ import android.content.DialogInterface;
 import android.graphics.Color;
 import android.graphics.Point;
 import android.os.Bundle;
+import android.os.Handler;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.GridLayout;
 import android.widget.TextView;
-import android.os.Handler;
+import android.widget.Toast;
 
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 
-import clarkson.ee408.tictactoev4.client.AppExecutors;
-import clarkson.ee408.tictactoev4.socket.GamingResponse;
-import clarkson.ee408.tictactoev4.socket.Request;
-import clarkson.ee408.tictactoev4.client.SocketClient;
-import clarkson.ee408.tictactoev4.socket.Response;
+import clarkson.ee408.tictactoev4.model.Event;
+import clarkson.ee408.tictactoev4.socket.*;
+import clarkson.ee408.tictactoev4.client.*;
 
 public class MainActivity extends AppCompatActivity {
+
+    /**
+     * Logging Tag, this will help distinct log coming from this class from other logs
+     */
+    private static final String TAG = "MAIN_ACTIVITY";
+
     private TicTacToe tttGame;
     private Button [][] buttons;
     private TextView status;
+
     private Gson gson;
-    private SocketClient socketClient;
-    private Handler moveHandler = new Handler();
-    private boolean shouldRequestMove = false;
-    private boolean isPlayerTurn;
+
+    private Event event;
+
+    private Handler handler;
+    private Runnable refresh;
+
+    private boolean shouldRequestMove;
 
     @Override
     protected void onCreate( Bundle savedInstanceState ) {
-        super.onCreate(savedInstanceState);
-        tttGame = new TicTacToe(2);
-        buildGuiByCode();
-        gson = new Gson();
-        socketClient = SocketClient.getInstance();
-        isPlayerTurn = tttGame.getPlayer() == 1;
+        super.onCreate( savedInstanceState );
+        tttGame = new TicTacToe(1);
+        buildGuiByCode( );
+
+        gson = new GsonBuilder().serializeNulls().create();
         updateTurnStatus();
-
-        Runnable moveTask = new Runnable() {
-            @Override
-            public void run() {
-                if (shouldRequestMove) {
-                    requestMove();
-                }
-                moveHandler.postDelayed(this, 1000);
-            }
+        // Background Timer
+        handler = new Handler();
+        refresh = () -> {
+            if(shouldRequestMove) requestMove();
+            handler.postDelayed(refresh, 500);
         };
-        moveHandler.postDelayed(moveTask, 1000);
+        handler.post(refresh);
     }
 
-
-    private void updateTurnStatus() {
-        runOnUiThread(() -> {
-            if (isPlayerTurn) {
-                status.setText("Your Turn");
-                enableButtons(true);
-                shouldRequestMove = false;
-            } else {
-                status.setText("Waiting for Opponent");
-                enableButtons(false);
-                shouldRequestMove = true;
-            }
-        });
-    }
-
-
-    private void requestMove() {
-        AppExecutors.getInstance().networkIO().execute(() -> {
-            // Create a request for a move
-            Request moveRequest = new Request(Request.RequestType.REQUEST_MOVE, "Requesting next move");
-
-            // Send the request to the server and expect GamingResponse as the response type
-            GamingResponse response = socketClient.sendRequest(moveRequest, GamingResponse.class);
-            Log.d("", "The response is getting the move: " + response.getMove());
-
-            if (response != null && response.getStatus() == Response.ResponseStatus.SUCCESS) {
-                // No need to parse JSON, as we directly have the move value
-                int move = response.getMove();
-                if(move != -1) { // Check if a valid move is received
-                    int row = move / 3;
-                    int column = move % 3;
-                    // Run on the UI thread to update the board
-                    Log.d("", "The row is: " + row + " The col is: " + column);
-                    runOnUiThread(() -> update(row, column));
-                } else {
-                    System.out.println("No move received or opponent not active");
-                }
-            } else {
-                // Handle the case where response is null or status is not SUCCESS
-                System.out.println("Failed to get a valid response from the server");
-            }
-        });
-    }
-
-
-    private void sendMove(int move) {
-        // Serialize the move
-        String serializedMove = gson.toJson(move);
-
-        // Create a request object with the serialized move
-        Request moveRequest = new Request(Request.RequestType.SEND_MOVE, serializedMove);
-
-        // Send the request to the server
-        AppExecutors.getInstance().networkIO().execute(() -> {
-            socketClient.sendRequest(moveRequest, Response.class);
-        });
-    }
-
-
+    /**
+     * Build the initial game graphical user interface
+     */
     public void buildGuiByCode( ) {
         // Get width of the screen
         Point size = new Point( );
@@ -180,98 +129,175 @@ public class MainActivity extends AppCompatActivity {
         setContentView( gridLayout );
     }
 
+    /**
+     * Updates the game board by adding a move at a particular position
+     * @param row move row
+     * @param col move column
+     */
     public void update( int row, int col ) {
-        Log.d("", "In the update function");
         int play = tttGame.play( row, col );
-        if (play != 0) {
-            if (play == 1) {
-                Log.d("", "Updating button with X");
-                buttons[row][col].setText("X");
-            } else if (play == 2) {
-                Log.d("", "Updating button with O");
-                buttons[row][col].setText("O");
-            }
-            if (tttGame.isGameOver()) {
-                status.setBackgroundColor(Color.RED);
-                enableButtons(false);
-                status.setText(tttGame.result());
-                showNewGameDialog();  // offer to play again
-            } else {
-                Log.d("", "Game not over, player is: " + isPlayerTurn);
-                isPlayerTurn = !isPlayerTurn;
-                updateTurnStatus();
-            }
-        } else {
+        if( play == 1 )
+            buttons[row][col].setText( "X" );
+        else if( play == 2 )
+            buttons[row][col].setText( "O" );
+        if( tttGame.isGameOver( ) ) {
+            status.setBackgroundColor( Color.RED );
+            enableButtons( false );
+            status.setText( tttGame.result( ) );
+            shouldRequestMove = false;
+            showNewGameDialog( );	// offer to play again
+        }else {
             updateTurnStatus();
-            int move = row * 3 + col;
-            sendMove(move);
-
         }
     }
 
+    /**
+     * Enable or Disable button of the game board
+     * @param enabled whether to enable or disable
+     */
     public void enableButtons( boolean enabled ) {
         for( int row = 0; row < TicTacToe.SIDE; row++ )
             for( int col = 0; col < TicTacToe.SIDE; col++ )
                 buttons[row][col].setEnabled( enabled );
     }
 
+    /**
+     * Resets the game board UI
+     */
     public void resetButtons( ) {
         for( int row = 0; row < TicTacToe.SIDE; row++ )
             for( int col = 0; col < TicTacToe.SIDE; col++ )
                 buttons[row][col].setText( "" );
     }
 
+    /**
+     * Display new game dialog
+     */
     public void showNewGameDialog( ) {
         AlertDialog.Builder alert = new AlertDialog.Builder( this );
-        alert.setTitle( tttGame.result() );
-        alert.setMessage( "Do You Want To Play Again?" );
+        alert.setTitle(tttGame.result());
+        alert.setMessage( "Do you want to play again?" );
         PlayDialog playAgain = new PlayDialog( );
         alert.setPositiveButton( "YES", playAgain );
         alert.setNegativeButton( "NO", playAgain );
-        alert.show();
+        alert.show( );
     }
 
+    /**
+     * Click listener for Game board
+     */
     private class ButtonHandler implements View.OnClickListener {
-        public void onClick(View v) {
+        public void onClick( View v ) {
             Log.d("button clicked", "button clicked");
 
-            for (int row = 0; row < TicTacToe.SIDE; row++) {
-                for (int column = 0; column < TicTacToe.SIDE; column++) {
-                    if (v == buttons[row][column]) {
-                        if (isPlayerTurn) {
-                            // Converts the row and col to an integer
-                            int move = row * 3 + column;
-                            sendMove(move);
-                            update(row, column);
-
-                        }
-                        return;
+            for( int row = 0; row < TicTacToe.SIDE; row ++ )
+                for( int column = 0; column < TicTacToe.SIDE; column++ )
+                    if( v == buttons[row][column] ) {
+                        sendMove((row * TicTacToe.SIDE) + column);
+                        update(row, column);
                     }
-                }
-            }
         }
     }
 
-
+    /**
+     * Click listener for Play Again Dialog
+     */
     private class PlayDialog implements DialogInterface.OnClickListener {
         public void onClick( DialogInterface dialog, int id ) {
             if( id == -1 ) /* YES button */ {
-                int currentPlayer = tttGame.getPlayer();
-                if (currentPlayer == 1) {
-                    tttGame.setPlayer(2);
-                } else if (currentPlayer == 2) {
-                    tttGame.setPlayer(1);
-                }
                 tttGame.resetGame( );
                 enableButtons( true );
                 resetButtons( );
                 status.setBackgroundColor( Color.GREEN );
                 status.setText( tttGame.result( ) );
-                isPlayerTurn = (tttGame.getPlayer() == 1);
+                tttGame.setPlayer(tttGame.getPlayer() == 1 ? 2:1);
                 updateTurnStatus();
             }
             else if( id == -2 ) // NO button
                 MainActivity.this.finish( );
         }
+    }
+
+    /**
+     * Updates game states when turn changes
+     */
+    private void updateTurnStatus() {
+        if(tttGame.getPlayer() == tttGame.getTurn()) {
+            status.setText("Your Turn");
+            enableButtons(true);
+            shouldRequestMove = false;
+        } else{
+            status.setText("Waiting for Opponent");
+            enableButtons(false);
+            shouldRequestMove = true;
+        }
+    }
+
+    /**
+     * Request move from the server
+     * If there is a valid move, the game board is updated
+     */
+    private void requestMove() {
+        Request request = new Request();
+        request.setType(Request.RequestType.REQUEST_MOVE);
+
+        AppExecutors.getInstance().networkIO().execute(() -> {
+            Event.EventStatus currentEventStatus = event.getStatus();
+
+            AppExecutors.getInstance().mainThread().execute(() -> {
+                GamingResponse response = SocketClient.getInstance().sendRequest(request, GamingResponse.class);
+
+                if (currentEventStatus == Event.EventStatus.ABORTED) {
+                    response.setActive(false);
+                    Toast.makeText(getApplicationContext(), "Opponent Abort", Toast.LENGTH_LONG).show();
+                } else if (currentEventStatus == Event.EventStatus.COMPLETED) {
+                    response.setActive(false);
+                    Toast.makeText(getApplicationContext(), "Opponent Denied Playing Again", Toast.LENGTH_LONG).show();
+                } else {
+                    response.setActive(true);
+                    if (response.getStatus() == Response.ResponseStatus.FAILURE) {
+                        Toast.makeText(getApplicationContext(), response.getMessage(), Toast.LENGTH_LONG).show();
+                    } else if(response.getMove() != -1){
+                        // Convert cell id to row and columns
+                        int row = response.getMove() / 3;
+                        int col = response.getMove() % 3;
+                        update(row, col);
+                    }
+                }
+            });
+        });
+    }
+
+    /**
+     * Sends the users move to the server
+     * @param move The cell the user clicked from 0-8
+     */
+    private void sendMove(int move) {
+        Request request = new Request();
+        request.setType(Request.RequestType.SEND_MOVE);
+        request.setData(gson.toJson(move));
+
+        Log.e(TAG, "Sending Move: " + move);
+        AppExecutors.getInstance().networkIO().execute(()-> {
+            Response response = SocketClient.getInstance().sendRequest(request, Response.class);
+            AppExecutors.getInstance().mainThread().execute(()-> {
+                if(response == null) {
+                    Toast.makeText(this, "Couldn't send game move", Toast.LENGTH_SHORT).show();
+                } else if(response.getStatus() == Response.ResponseStatus.FAILURE) {
+                    Toast.makeText(this, response.getMessage(), Toast.LENGTH_SHORT).show();
+                } else { //Success
+                    Log.e(TAG, "Move sent");
+                }
+            });
+        });
+    }
+
+    /**
+     * Will be automatically called by Android when this page closes
+     */
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        handler.removeCallbacks(refresh);
     }
 }
